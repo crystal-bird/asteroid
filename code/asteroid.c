@@ -1,4 +1,88 @@
 
+#pragma pack(push, 1)
+
+enum
+{
+    WAV_ChunkID_RIFF = FourCC('R', 'I', 'F', 'F'),
+    WAV_FormatID_WAVE = FourCC('W', 'A', 'V', 'E'),
+    
+    WAV_ChunkID_fmt = FourCC('f', 'm', 't', ' '),
+    WAV_ChunkID_data = FourCC('d', 'a', 't', 'a'),
+};
+
+typedef struct
+{
+    u32 TagRIFF;
+    u32 FileSize;
+    u32 Format;
+} wav_riff_chunk;
+
+typedef struct
+{
+    u32 ID;
+    u32 Size;
+} wav_chunk_header;
+
+typedef struct
+{
+    u16 AudioFormat;
+    u16 ChannelCount;
+    u32 SampleRate;
+    u32 ByteRate;
+    u16 BlockAlign;
+    u16 BitsPerSample;
+} wav_fmt_chunk;
+
+#pragma pack(pop)
+
+internal sound LoadSoundFromWAV(platform_read_entire_file* ReadEntireFile,
+                                char* FileName)
+{
+    sound Result = {0};
+    
+    entire_file WAVFile = ReadEntireFile(FileName);
+    if (WAVFile.Contents)
+    {
+        entire_file* At = &WAVFile;
+        
+        wav_riff_chunk* RIFF = Consume(At, wav_riff_chunk);
+        
+        Assert(RIFF->TagRIFF == WAV_ChunkID_RIFF);
+        Assert(RIFF->Format == WAV_FormatID_WAVE);
+        
+        while (At->ContentsSize)
+        {
+            wav_chunk_header* ChunkHeader = Consume(At, wav_chunk_header);
+            void* ChunkData = ConsumeSize(At, ChunkHeader->Size);
+            
+            switch (ChunkHeader->ID)
+            {
+                case WAV_ChunkID_fmt:
+                {
+                    wav_fmt_chunk* FMT = (wav_fmt_chunk*)ChunkData;
+                    
+                    Assert(FMT->AudioFormat == 1);
+                    Assert(FMT->BitsPerSample == 16);
+                    Assert(FMT->ChannelCount <= 2);
+                    
+                    Result.ChannelCount = FMT->ChannelCount;
+                    Result.SampleRate = FMT->SampleRate;
+                } break;
+                
+                case WAV_ChunkID_data:
+                {
+                    u32 BytesPerSample = sizeof(s16) * Result.ChannelCount;
+                    
+                    Result.SampleCount = ChunkHeader->Size / BytesPerSample;
+                    Result.Samples = ChunkData;
+                } break;
+            }
+        }
+    }
+    
+    return (Result);
+}
+
 internal v4 Linear1ToSRGB255(v4 Color)
 {
     f32 One255 = 255.0f;
@@ -384,6 +468,26 @@ internal void DestroyBullet(game_state* GameState, bullet** BulletPtr)
     GameState->FirstFreeBullet = Bullet;
 }
 
+internal void PlaySound(game_state* GameState, sound* Sound, f32 Volume[2], b32 Looped)
+{
+    if (!GameState->FirstFreePlayingSound)
+    {
+        GameState->FirstFreePlayingSound = PushVariable(&GameState->PermanentArena, playing_sound);
+    }
+    
+    playing_sound* PlayingSound = GameState->FirstFreePlayingSound;
+    GameState->FirstFreePlayingSound = PlayingSound->Next;
+    
+    PlayingSound->Sound = Sound;
+    PlayingSound->SamplesPlayed = 0;
+    PlayingSound->Volume[0] = Volume[0];
+    PlayingSound->Volume[1] = Volume[1];
+    PlayingSound->Looped = Looped;
+    
+    PlayingSound->Next = GameState->FirstPlayingSound;
+    GameState->FirstPlayingSound = PlayingSound;
+}
+
 internal void ResetGame(game_state* GameState)
 {
     player* Player = &GameState->Player;
@@ -431,6 +535,20 @@ void GameUpdateAndRender(game_memory* Memory, game_input* Input, game_backbuffer
         
         GameState->TransientArena = InitMemoryArena(Memory->TransientStorage,
                                                     Memory->TransientStorageSize);
+        
+        GameState->Music = LoadSoundFromWAV(Memory->PlatformReadEntireFile,
+                                            "music.wav");
+        
+        GameState->ShootSound = LoadSoundFromWAV(Memory->PlatformReadEntireFile,
+                                                 "shoot.wav");
+        
+        GameState->DeathSound = LoadSoundFromWAV(Memory->PlatformReadEntireFile,
+                                                 "death.wav");
+        
+        f32 MusicVolume[2] = {0.65f, 0.65f};
+        b32 MusicLooped = true;
+        
+        PlaySound(GameState, &GameState->Music, MusicVolume, MusicLooped);
         
         GameState->Entropy.State = RandomSeed();
         
@@ -490,6 +608,12 @@ void GameUpdateAndRender(game_memory* Memory, game_input* Input, game_backbuffer
             
             NewBullet(GameState, P, DP);
             
+            f32 ShootSoundVolume[2] = {2.0f, 2.0f};
+            b32 ShootSoundLooped = false;
+            
+            PlaySound(GameState, &GameState->ShootSound,
+                      ShootSoundVolume, ShootSoundLooped);
+            
             Player->ShootTimer = 0.25f;
         }
         
@@ -513,6 +637,12 @@ void GameUpdateAndRender(game_memory* Memory, game_input* Input, game_backbuffer
             
             if (PolygonIntersects(&PlayerPolygon, &AsteroidPolygon))
             {
+                f32 DeathSoundVolume[2] = {2.0f, 2.0f};
+                b32 DeathSoundLooped = false;
+                
+                PlaySound(GameState, &GameState->DeathSound,
+                          DeathSoundVolume, DeathSoundLooped);
+                
                 ResetGame(GameState);
                 break;
             }
@@ -616,4 +746,105 @@ void GameUpdateAndRender(game_memory* Memory, game_input* Input, game_backbuffer
         
         DrawPolygon(Backbuffer, &Polygon, V4(0.3f, 0.4f, 1.0f, 1.0f));
     }
+}
+
+void GameGetSoundSamples(game_memory* Memory, game_sound_buffer* SoundBuffer)
+{
+    game_state* GameState = (game_state*)Memory->PermanentStorage;
+    
+    temporary_memory MixerMemory = BeginTemporaryMemory(&GameState->TransientArena);
+    
+    f32* MixingChannels[2];
+    MixingChannels[0] = PushArray(MixerMemory.Arena, SoundBuffer->SampleRate, f32);
+    MixingChannels[1] = PushArray(MixerMemory.Arena, SoundBuffer->SampleRate, f32);
+    
+    {
+        f32* Dest0 = MixingChannels[0];
+        f32* Dest1 = MixingChannels[1];
+        
+        for (u32 SampleIndex = 0;
+             SampleIndex < SoundBuffer->SampleCount;
+             SampleIndex++)
+        {
+            *Dest0++ = 0;
+            *Dest1++ = 0;
+        }
+    }
+    
+    {
+        for (playing_sound** PlayingSoundPtr = &GameState->FirstPlayingSound;
+             *PlayingSoundPtr;)
+        {
+            playing_sound* PlayingSound = *PlayingSoundPtr;
+            sound* Sound = PlayingSound->Sound;
+            
+            u32 SamplesRemaining = Sound->SampleCount - TruncateF32ToU32(PlayingSound->SamplesPlayed);
+            u32 SamplesToMix = Minimum(SamplesRemaining, SoundBuffer->SampleCount);
+            
+            f32 dSampleIndex = (f32)Sound->SampleRate / (f32)SoundBuffer->SampleRate;
+            
+            for (u32 ChannelIndex = 0;
+                 ChannelIndex < Sound->ChannelCount;
+                 ChannelIndex++)
+            {
+                f32* Dest = MixingChannels[ChannelIndex];
+                f32 Volume = PlayingSound->Volume[ChannelIndex];
+                
+                for (u32 LoopIndex = 0;
+                     LoopIndex < SamplesToMix;
+                     LoopIndex++)
+                {
+                    f32 SampleIndexF32 = PlayingSound->SamplesPlayed + dSampleIndex*LoopIndex;
+                    
+                    u32 SampleIndex0 = TruncateF32ToU32(SampleIndexF32);
+                    u32 SampleIndex1 = Minimum(SampleIndex0 + 1, SoundBuffer->SampleCount - 1);
+                    
+                    s16 Sample0 = Sound->Samples[SampleIndex0*Sound->ChannelCount + ChannelIndex];
+                    s16 Sample1 = Sound->Samples[SampleIndex1*Sound->ChannelCount + ChannelIndex];
+                    
+                    f32 Frac = SampleIndexF32 - SampleIndex0;
+                    f32 SampleValue = Sample0 + (Sample1 - Sample0)*Frac;
+                    
+                    *Dest++ += Volume*SampleValue;
+                }
+            }
+            
+            PlayingSound->SamplesPlayed += dSampleIndex*SamplesToMix;
+            if (PlayingSound->SamplesPlayed >= Sound->SampleCount)
+            {
+                if (PlayingSound->Looped)
+                {
+                    PlayingSound->SamplesPlayed = 0;
+                    PlayingSoundPtr = &PlayingSound->Next;
+                }
+                else
+                {
+                    *PlayingSoundPtr = PlayingSound->Next;
+                    
+                    PlayingSound->Next = GameState->FirstFreePlayingSound;
+                    GameState->FirstFreePlayingSound = PlayingSound;
+                }
+            }
+            else
+            {
+                PlayingSoundPtr = &PlayingSound->Next;
+            }
+        }
+    }
+    
+    {
+        f32* Source0 = MixingChannels[0];
+        f32* Source1 = MixingChannels[1];
+        
+        s16* Dest = SoundBuffer->Samples;
+        for (u32 SampleIndex = 0;
+             SampleIndex < SoundBuffer->SampleCount;
+             SampleIndex++)
+        {
+            *Dest++ = (s16)(*Source0++);
+            *Dest++ = (s16)(*Source1++);
+        }
+    }
+    
+    EndTemporaryMemory(MixerMemory);
 }

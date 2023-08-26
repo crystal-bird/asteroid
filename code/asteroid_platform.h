@@ -9,6 +9,12 @@
 #define persist static
 #define internal static
 
+#define FourCC(A, B, C, D) \
+(((u32)(A) << 0 ) | \
+((u32)(B) << 8 ) | \
+((u32)(C) << 16) | \
+((u32)(D) << 24))
+
 #define ArrayCount(Array) (sizeof(Array) / sizeof((Array)[0]))
 
 #define Assert(Expression) do { if(!(Expression)) { *(int*)0 = 0; } } while(0)

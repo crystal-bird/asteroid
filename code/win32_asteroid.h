@@ -13,4 +13,15 @@ typedef struct
     BITMAPINFO BitmapInfo;
 } win32_backbuffer;
 
+typedef struct
+{
+    s32 SampleRate;
+    s32 LatencySampleRate;
+    
+    s32 BytesPerSample;
+    s32 SoundBufferSize;
+    
+    u64 RunningSampleIndex;
+} win32_sound_output;
+
 #endif //WIN32_ASTEROID_H

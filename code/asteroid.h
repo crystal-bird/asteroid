@@ -5,14 +5,53 @@
 
 typedef struct
 {
+    void* Contents;
+    umm ContentsSize;
+} entire_file;
+
+#define Consume(File, Type) (Type*)ConsumeSize(File, sizeof(Type))
+
+internal void* ConsumeSize(entire_file* File, umm Size)
+{
+    void* Result = 0;
+    
+    if (File->ContentsSize >= Size)
+    {
+        Result = File->Contents;
+        
+        File->Contents = (u8*)File->Contents + Size;
+        File->ContentsSize -= Size;
+    }
+    else
+    {
+        InvalidCodePath;
+    }
+    
+    return (Result);
+}
+
+#define PLATFORM_READ_ENTIRE_FILE(Name) entire_file Name(char* FileName)
+typedef PLATFORM_READ_ENTIRE_FILE(platform_read_entire_file);
+
+typedef struct
+{
     void* PermanentStorage;
     umm PermanentStorageSize;
     
     void* TransientStorage;
     umm TransientStorageSize;
     
+    platform_read_entire_file* PlatformReadEntireFile;
+    
     b32 IsInitialized;
 } game_memory;
+
+typedef struct
+{
+    s16* Samples;
+    s32 SampleRate;
+    u32 SampleCount;
+} game_sound_buffer;
 
 typedef struct
 {
@@ -71,11 +110,14 @@ typedef struct
 
 void GameUpdateAndRender(game_memory* Memory, game_input* Input, game_backbuffer* Backbuffer);
 
+void GameGetSoundSamples(game_memory* Memory, game_sound_buffer* SoundBuffer);
+
 typedef struct
 {
     void* Base;
     umm Used;
     umm Size;
+    umm TemporaryCount;
 } memory_arena;
 
 internal memory_arena InitMemoryArena(void* Base, umm Size)
@@ -84,10 +126,12 @@ internal memory_arena InitMemoryArena(void* Base, umm Size)
     Result.Base = Base;
     Result.Used = 0;
     Result.Size = Size;
+    Result.TemporaryCount = 0;
     return (Result);
 }
 
 #define PushVariable(Arena, Type) (Type*)PushSize(Arena, sizeof(Type))
+#define PushArray(Arena, Count, Type) (Type*)PushSize(Arena, Count * sizeof(Type))
 
 internal void* PushSize(memory_arena* Arena, umm Size)
 {
@@ -104,6 +148,33 @@ internal void* PushSize(memory_arena* Arena, umm Size)
     }
     
     return (Result);
+}
+
+typedef struct
+{
+    memory_arena* Arena;
+    umm LastUsed;
+} temporary_memory;
+
+internal temporary_memory BeginTemporaryMemory(memory_arena* Arena)
+{
+    temporary_memory Result = {0};
+    Result.Arena = Arena;
+    Result.LastUsed = Arena->Used;
+    
+    Arena->TemporaryCount++;
+    
+    return (Result);
+}
+
+internal void EndTemporaryMemory(temporary_memory TempMem)
+{
+    memory_arena* Arena = TempMem.Arena;
+    
+    Assert(Arena->TemporaryCount > 0);
+    Assert(Arena->Used >= TempMem.LastUsed);
+    
+    Arena->Used = TempMem.LastUsed;
 }
 
 typedef struct
@@ -148,8 +219,32 @@ typedef struct asteroid
 
 typedef struct
 {
+    u32 SampleRate;
+    u32 ChannelCount;
+    
+    u32 SampleCount;
+    s16* Samples;
+} sound;
+
+typedef struct playing_sound
+{
+    sound* Sound;
+    f32 SamplesPlayed;
+    
+    f32 Volume[2];
+    b32 Looped;
+    
+    struct playing_sound* Next;
+} playing_sound;
+
+typedef struct
+{
     memory_arena PermanentArena;
     memory_arena TransientArena;
+    
+    sound Music;
+    sound ShootSound;
+    sound DeathSound;
     
     random_series Entropy;
     
@@ -160,6 +255,9 @@ typedef struct
     
     asteroid* FirstAsteroid;
     asteroid* FirstFreeAsteroid;
+    
+    playing_sound* FirstPlayingSound;
+    playing_sound* FirstFreePlayingSound;
 } game_state;
 
 #endif //ASTEROID_H

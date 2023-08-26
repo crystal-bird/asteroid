@@ -1,4 +1,6 @@
 
 @echo off
 
-call build\asteroid.exe
+pushd data
+call ..\build\asteroid.exe
+popd

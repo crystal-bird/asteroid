@@ -33,6 +33,22 @@ internal u32 RotateRight32(u32 Value, u32 Shift)
     return (Result);
 }
 
+internal s32 TruncateF32ToS32(f32 Value)
+{
+    s32 Result = _mm_cvtss_si32(_mm_round_ss(_mm_setzero_ps(), _mm_set_ss(Value),
+                                             _MM_FROUND_TO_ZERO|_MM_FROUND_NO_EXC));
+    
+    return (Result);
+}
+
+internal u32 TruncateF32ToU32(f32 Value)
+{
+    u32 Result = _mm_cvtss_si32(_mm_round_ss(_mm_setzero_ps(), _mm_set_ss(Value),
+                                             _MM_FROUND_TO_ZERO|_MM_FROUND_NO_EXC));
+    
+    return (Result);
+}
+
 internal s32 RoundF32ToS32(f32 Value)
 {
     s32 Result = _mm_cvtss_si32(_mm_round_ss(_mm_setzero_ps(), _mm_set_ss(Value),

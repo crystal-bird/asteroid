@@ -8,12 +8,43 @@
 
 #include <stdio.h>
 #include <windows.h>
+#include <dsound.h>
 
 #include "win32_asteroid.h"
 
 global b32 GlobalRunning;
 global win32_backbuffer GlobalBackbuffer;
 global game_input GlobalGameInput;
+
+global LPDIRECTSOUNDBUFFER GlobalSoundBuffer;
+
+internal PLATFORM_READ_ENTIRE_FILE(Win32ReadEntireFile)
+{
+    entire_file Result = {0};
+    
+    HANDLE FileHandle = CreateFileA(FileName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
+    if (FileHandle != INVALID_HANDLE_VALUE)
+    {
+        LARGE_INTEGER FileSize;
+        GetFileSizeEx(FileHandle, &FileSize);
+        
+        Assert(FileSize.QuadPart <= GB(4));
+        
+        Result.ContentsSize = FileSize.QuadPart;
+        Result.Contents = VirtualAlloc(0, Result.ContentsSize,
+                                       MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+        
+        DWORD BytesToRead = (DWORD)Result.ContentsSize;
+        DWORD BytesRead;
+        
+        ReadFile(FileHandle, Result.Contents, BytesToRead, &BytesRead, 0);
+        Assert(BytesRead == BytesToRead);
+        
+        CloseHandle(FileHandle);
+    }
+    
+    return (Result);
+}
 
 internal void Win32HandleKeyboardButton(game_input_button* Button, b32 IsDown)
 {
@@ -173,6 +204,102 @@ internal HWND Win32CreateWindow(void)
     return (Window);
 }
 
+typedef HRESULT WINAPI direct_sound_create(LPGUID lpGuid, LPDIRECTSOUND* ppDS, LPUNKNOWN pUnkOuter);
+internal void Win32InitDSound(HWND Window,
+                              s32 SampleRate,
+                              s32 SoundBufferSize)
+{
+    HMODULE DSoundLibrary = LoadLibraryA("dsound.dll");
+    
+    b32 Succeeded = false;
+    
+    if (DSoundLibrary)
+    {
+        direct_sound_create* DirectSoundCreate = (direct_sound_create*)
+            GetProcAddress(DSoundLibrary, "DirectSoundCreate");
+        
+        LPDIRECTSOUND DSound;
+        if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(0, &DSound, 0)))
+        {
+            WAVEFORMATEX WaveFormat = {0};
+            WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+            WaveFormat.nSamplesPerSec = SampleRate;
+            WaveFormat.nChannels = 2;
+            WaveFormat.wBitsPerSample = 16;
+            WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
+            WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign;
+            
+            if (SUCCEEDED(DSound->lpVtbl->SetCooperativeLevel(DSound, Window, DSSCL_PRIORITY)))
+            {
+                DSBUFFERDESC BufferDescription = {0};
+                BufferDescription.dwSize = sizeof(BufferDescription);
+                BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+                
+                LPDIRECTSOUNDBUFFER PrimaryBuffer;
+                if (SUCCEEDED(DSound->lpVtbl->CreateSoundBuffer(DSound,
+                                                                &BufferDescription,
+                                                                &PrimaryBuffer,
+                                                                0)))
+                {
+                    if (SUCCEEDED(PrimaryBuffer->lpVtbl->SetFormat(PrimaryBuffer,
+                                                                   &WaveFormat)))
+                    {
+                        Succeeded = true;
+                    }
+                }
+            }
+            
+            if (Succeeded)
+            {
+                DSBUFFERDESC BufferDescription = {0};
+                BufferDescription.dwSize = sizeof(BufferDescription);
+                BufferDescription.dwFlags = DSBCAPS_GETCURRENTPOSITION2|DSBCAPS_GLOBALFOCUS;
+                BufferDescription.dwBufferBytes = SoundBufferSize;
+                BufferDescription.lpwfxFormat = &WaveFormat;
+                
+                if (SUCCEEDED(DSound->lpVtbl->CreateSoundBuffer(DSound,
+                                                                &BufferDescription,
+                                                                &GlobalSoundBuffer,
+                                                                0)))
+                {
+                    Succeeded = true;
+                }
+                else
+                {
+                    Succeeded = false;
+                }
+            }
+        }
+    }
+    
+    Assert(Succeeded);
+}
+
+internal void Win32ClearSoundBuffer(s32 SoundBufferSize)
+{
+    void* Region;
+    DWORD RegionSize;
+    
+    if (SUCCEEDED(GlobalSoundBuffer->lpVtbl->Lock(GlobalSoundBuffer,
+                                                  0, SoundBufferSize,
+                                                  &Region, &RegionSize,
+                                                  0, 0,
+                                                  0)))
+    {
+        u8* Byte = (u8*)Region;
+        for (DWORD ByteIndex = 0;
+             ByteIndex < RegionSize;
+             ByteIndex++)
+        {
+            *Byte++ = 0;
+        }
+        
+        GlobalSoundBuffer->lpVtbl->Unlock(GlobalSoundBuffer,
+                                          Region, RegionSize,
+                                          0, 0);
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE Instance,
                     HINSTANCE PrevInstance,
                     LPWSTR CommandLine,
@@ -180,6 +307,27 @@ int WINAPI wWinMain(HINSTANCE Instance,
 {
     HWND Window = Win32CreateWindow();
     Assert(IsWindow(Window));
+    
+    win32_sound_output SoundOutput = {0};
+    SoundOutput.SampleRate = 48000;
+    SoundOutput.LatencySampleRate = SoundOutput.SampleRate / 15;
+    SoundOutput.BytesPerSample = sizeof(s16) * 2;
+    SoundOutput.SoundBufferSize = SoundOutput.SampleRate * SoundOutput.BytesPerSample * 2;
+    SoundOutput.RunningSampleIndex = 0;
+    
+    Win32InitDSound(Window,
+                    SoundOutput.SampleRate,
+                    SoundOutput.SoundBufferSize);
+    
+    Win32ClearSoundBuffer(SoundOutput.SoundBufferSize);
+    
+    GlobalSoundBuffer->lpVtbl->Play(GlobalSoundBuffer, 0, 0, DSBPLAY_LOOPING);
+    
+    game_sound_buffer GameSoundBuffer = {0};
+    GameSoundBuffer.Samples = VirtualAlloc(0, SoundOutput.SoundBufferSize,
+                                           MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+    GameSoundBuffer.SampleRate = SoundOutput.SampleRate;
+    GameSoundBuffer.SampleCount = 0;
     
     HDC DeviceContext = GetDC(Window);
     
@@ -192,6 +340,8 @@ int WINAPI wWinMain(HINSTANCE Instance,
     
     GameMemory.TransientStorage = VirtualAlloc(0, GameMemory.TransientStorageSize,
                                                MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+    
+    GameMemory.PlatformReadEntireFile = Win32ReadEntireFile;
     
     GameMemory.IsInitialized = false;
     
@@ -249,6 +399,73 @@ int WINAPI wWinMain(HINSTANCE Instance,
                       GlobalBackbuffer.Memory,
                       &GlobalBackbuffer.BitmapInfo,
                       DIB_RGB_COLORS, SRCCOPY);
+        
+        DWORD PlayCursor;
+        DWORD WriteCursor;
+        if (SUCCEEDED(GlobalSoundBuffer->lpVtbl->GetCurrentPosition(GlobalSoundBuffer,
+                                                                    &PlayCursor, &WriteCursor)))
+        {
+            DWORD LatencyBytes = SoundOutput.LatencySampleRate * SoundOutput.BytesPerSample;
+            DWORD TargetCursor = (PlayCursor + LatencyBytes) % SoundOutput.SoundBufferSize;
+            
+            DWORD ByteToLock = (SoundOutput.RunningSampleIndex * SoundOutput.BytesPerSample) % SoundOutput.SoundBufferSize;
+            
+            DWORD BytesToWrite;
+            if (ByteToLock > TargetCursor)
+            {
+                BytesToWrite = SoundOutput.SoundBufferSize - ByteToLock;
+                BytesToWrite += TargetCursor;
+            }
+            else
+            {
+                BytesToWrite = TargetCursor - ByteToLock;
+            }
+            
+            GameSoundBuffer.SampleCount = BytesToWrite / SoundOutput.BytesPerSample;
+            GameGetSoundSamples(&GameMemory, &GameSoundBuffer);
+            
+            void* Region1;
+            DWORD Region1Size;
+            void* Region2;
+            DWORD Region2Size;
+            
+            if (SUCCEEDED(GlobalSoundBuffer->lpVtbl->Lock(GlobalSoundBuffer,
+                                                          ByteToLock, BytesToWrite,
+                                                          &Region1, &Region1Size,
+                                                          &Region2, &Region2Size,
+                                                          0)))
+            {
+                s16* SourceSamples = GameSoundBuffer.Samples;
+                
+                s16* Samples = (s16*)Region1;
+                DWORD Region1SampleCount = Region1Size / SoundOutput.BytesPerSample;
+                for (DWORD SampleIndex = 0;
+                     SampleIndex < Region1SampleCount;
+                     SampleIndex++)
+                {
+                    *Samples++ = *SourceSamples++;
+                    *Samples++ = *SourceSamples++;
+                    
+                    SoundOutput.RunningSampleIndex++;
+                }
+                
+                Samples = (s16*)Region2;
+                DWORD Region2SampleCount = Region2Size / SoundOutput.BytesPerSample;
+                for (DWORD SampleIndex = 0;
+                     SampleIndex < Region2SampleCount;
+                     SampleIndex++)
+                {
+                    *Samples++ = *SourceSamples++;
+                    *Samples++ = *SourceSamples++;
+                    
+                    SoundOutput.RunningSampleIndex++;
+                }
+                
+                GlobalSoundBuffer->lpVtbl->Unlock(GlobalSoundBuffer,
+                                                  Region1, Region1Size,
+                                                  Region2, Region2Size);
+            }
+        }
         
         LARGE_INTEGER FrameEnd;
         QueryPerformanceCounter(&FrameEnd);
