@@ -1,0 +1,65 @@
+
+version(2);
+project_name = "Asteroid";
+
+patterns =
+{
+    "*.c",
+    "*.cpp",
+    "*.h",
+    "*.hpp",
+    "*.sh",
+    "*.bat",
+    "*.4coder",
+    "*.md",
+};
+
+blacklist_patterns =
+{
+    ".*",
+};
+
+load_paths =
+{
+    .win =
+    {
+        { .path = ".", .relative = true, .recursive = true, },
+    },
+};
+
+commands =
+{
+    .build =
+    {
+        .win = "build.bat",
+        .out = "*compilation*",
+        .footer_panel = true,
+        .save_dirty_files = true,
+        .cursor_at_end = false,
+    },
+    
+    .debug =
+    {
+        .win = "debug.bat",
+        .out = "*compilation*",
+        .footer_panel = true,
+        .save_dirty_files = true,
+        .cursor_at_end = false,
+    },
+    
+    .run =
+    {
+        .win = "run.bat",
+        .out = "*compilation*",
+        .footer_panel = true,
+        .save_dirty_files = true,
+        .cursor_at_end = false,
+    },
+};
+
+fkey_command =
+{
+    .F1 = "build",
+    .F2 = "debug",
+    .F3 = "run",
+};
